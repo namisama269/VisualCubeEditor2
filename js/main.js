@@ -1,7 +1,40 @@
+const STORAGE_CURRENT = 'vce2:current'
+const STORAGE_PRESETS = 'vce2:presets'
+const STORAGE_THEME = 'vce2:theme'
+const PREVIEW_SIZE = 200
+
+function getStoredTheme() {
+  try {
+    return localStorage.getItem(STORAGE_THEME) === 'dark' ? 'dark' : 'light'
+  } catch (e) {
+    return 'light'
+  }
+}
+const PERSIST_KEYS = [
+  'algtype', 'algorithm',
+  'faceletsU6', 'faceletsR6', 'faceletsF6', 'faceletsD6', 'faceletsL6', 'faceletsB6',
+  'faceletsU5', 'faceletsR5', 'faceletsF5', 'faceletsD5', 'faceletsL5', 'faceletsB5',
+  'faceletsU4', 'faceletsR4', 'faceletsF4', 'faceletsD4', 'faceletsL4', 'faceletsB4',
+  'faceletsU3', 'faceletsR3', 'faceletsF3', 'faceletsD3', 'faceletsL3', 'faceletsB3',
+  'faceletsU2', 'faceletsR2', 'faceletsF2', 'faceletsD2', 'faceletsL2', 'faceletsB2',
+  'faceletsU1', 'faceletsR1', 'faceletsF1', 'faceletsD1', 'faceletsL1', 'faceletsB1',
+  'arrowFromFace', 'arrowToFace', 'arrowPassFace', 'arrowFrom', 'arrowPass', 'arrowTo', 'arrowScale', 'arrowInfluence', 'arrowColor', 'arrows',
+  'cubeSize', 'imageSize',
+  'cubeView', 'stageMask', 'maskAlg',
+  'faceU', 'faceR', 'faceF', 'faceD', 'faceL', 'faceB',
+  'rotateAxis1', 'rotateAxis2', 'rotateAxis3',
+  'rotateAngle1', 'rotateAngle2', 'rotateAngle3',
+  'backgroundColor', 'cubeColor', 'maskColor',
+  'cubeOpacity', 'stickerOpacity', 'dist',
+]
+
 const app = Vue.createApp({
   data: () => ({
     parameter: {},
-    imageHeight: 128,
+    presets: {},
+    presetName: '',
+    selectedPreset: '',
+    theme: getStoredTheme(),
     algtype: 'alg',
     algorithm: '',
     algorithm3: false,
@@ -48,7 +81,9 @@ const app = Vue.createApp({
     faceletsB1: ['b'],
     showFacelets: false,
     algorithmDisabled: false,
-    arrowFace: 'U',
+    arrowFromFace: 'U',
+    arrowToFace: 'U',
+    arrowPassFace: 'U',
     arrowFrom: '0',
     arrowPass: '',
     arrowTo: '2',
@@ -124,7 +159,6 @@ const app = Vue.createApp({
   }),
   methods: {
     drawCube: function () {
-      this.imageHeight = this.imageSize
       if (this.algorithm) {
         if (this.algtype === 'alg') {
           this.parameter.algorithm = this.algorithm.trim()
@@ -289,11 +323,106 @@ const app = Vue.createApp({
 
       const element = document.getElementById('visualcube')
       const SRVisualizer = window['sr-visualizer']
-      element.removeChild(element.lastElementChild)
-      SRVisualizer.cubePNG(element, this.parameter)
+      // Preview is always rendered at a small fixed size; this.parameter still
+      // carries the user's imageSize so the debug panel and openImage see it.
+      const previewParams = { ...this.parameter, width: PREVIEW_SIZE, height: PREVIEW_SIZE }
+      SRVisualizer.cubePNG(element, previewParams)
+      // cubePNG appends asynchronously via setTimeout; queue a cleanup that runs
+      // after it to trim any accumulated stale <img>s down to the latest one.
+      setTimeout(() => {
+        while (element.children.length > 1) element.removeChild(element.firstChild)
+      }, 0)
     },
     resetSize() {
       this.imageSize = 128
+    },
+    openImage() {
+      // Open synchronously so popup blockers don't kill us, then update its
+      // location once we have a fresh blob URL.
+      const win = window.open('', '_blank')
+      if (!win) return
+      // Make sure this.parameter reflects current settings (incl. imageSize),
+      // then render fresh into a throwaway element at the user's full size.
+      this.drawCube()
+      const SRVisualizer = window['sr-visualizer']
+      const temp = document.createElement('div')
+      SRVisualizer.cubePNG(temp, { ...this.parameter })
+      const tryOpen = (attempt) => {
+        const img = temp.lastElementChild
+        if (img && img.src && img.src.indexOf('data:image') === 0) {
+          fetch(img.src)
+            .then((res) => res.blob())
+            .then((blob) => {
+              win.location.href = URL.createObjectURL(blob)
+            })
+            .catch(() => win.close())
+        } else if (attempt < 200) {
+          setTimeout(() => tryOpen(attempt + 1), 25)
+        } else {
+          win.close()
+        }
+      }
+      tryOpen(0)
+    },
+    getSnapshot() {
+      const snap = {}
+      for (const key of PERSIST_KEYS) snap[key] = JSON.parse(JSON.stringify(this[key]))
+      return snap
+    },
+    applySnapshot(snap) {
+      if (!snap) return
+      for (const key of PERSIST_KEYS) {
+        if (snap[key] !== undefined) this[key] = JSON.parse(JSON.stringify(snap[key]))
+      }
+    },
+    saveCurrent() {
+      try {
+        localStorage.setItem(STORAGE_CURRENT, JSON.stringify(this.getSnapshot()))
+      } catch (e) {}
+    },
+    loadCurrent() {
+      try {
+        const raw = localStorage.getItem(STORAGE_CURRENT)
+        if (raw) this.applySnapshot(JSON.parse(raw))
+      } catch (e) {}
+    },
+    loadPresets() {
+      try {
+        const raw = localStorage.getItem(STORAGE_PRESETS)
+        this.presets = raw ? JSON.parse(raw) : {}
+      } catch (e) {
+        this.presets = {}
+      }
+    },
+    persistPresets() {
+      try {
+        localStorage.setItem(STORAGE_PRESETS, JSON.stringify(this.presets))
+      } catch (e) {}
+    },
+    savePreset() {
+      const name = (this.presetName || '').trim()
+      if (!name) return
+      if (this.presets[name] && !confirm(`Overwrite existing preset "${name}"?`)) return
+      this.presets = { ...this.presets, [name]: this.getSnapshot() }
+      this.persistPresets()
+      this.selectedPreset = name
+      this.presetName = ''
+    },
+    loadPreset() {
+      const snap = this.presets[this.selectedPreset]
+      if (snap) this.applySnapshot(snap)
+    },
+    deletePreset() {
+      if (!this.selectedPreset) return
+      if (!confirm(`Delete preset "${this.selectedPreset}"?`)) return
+      const next = { ...this.presets }
+      delete next[this.selectedPreset]
+      this.presets = next
+      this.persistPresets()
+      this.selectedPreset = ''
+    },
+    toggleTheme() {
+      this.theme = this.theme === 'dark' ? 'light' : 'dark'
     },
     addAlgorithm(text) {
       if (this.cubeSize >= 6 && !isNaN(text) && (this.algorithm.slice(-1) !== ' ' || this.algorithm === '')) {
@@ -352,25 +481,27 @@ const app = Vue.createApp({
       }
     },
     addArrow() {
-      let addText
-      if (this.arrowPass === '') {
-        addText = this.arrowFace + this.arrowFrom + this.arrowFace + this.arrowTo
-      } else {
-        addText = this.arrowFace + this.arrowFrom + this.arrowFace + this.arrowTo + this.arrowFace + this.arrowPass
-      }
+      let addText = this.arrowFromFace + this.arrowFrom + this.arrowToFace + this.arrowTo
+      if (this.arrowPass !== '') addText += this.arrowPassFace + this.arrowPass
       if (this.arrowScale !== '') addText = addText + '-s' + this.arrowScale
       if (this.arrowInfluence !== '') addText = addText + '-i' + this.arrowInfluence
       if (this.arrowColor !== '#808080') addText = addText + '-' + this.arrowColor.replace('#', '')
 
       this.arrows === '' ? (this.arrows = addText) : (this.arrows = this.arrows + ',' + addText)
     },
-    resetArrow() {
-      this.arrowFace = 'U'
+    resetArrowStickers() {
+      this.arrowFromFace = 'U'
+      this.arrowToFace = 'U'
+      this.arrowPassFace = 'U'
       this.arrowFrom = '0'
       this.arrowPass = ''
       this.arrowTo = '2'
+    },
+    resetArrowShape() {
       this.arrowScale = ''
       this.arrowInfluence = ''
+    },
+    resetArrowColor() {
       this.arrowColor = '#808080'
     },
     rotateX() {
@@ -838,9 +969,21 @@ const app = Vue.createApp({
     arrows: function () {
       this.drawCube()
     },
-    imageSize: _.debounce(function () {
+    imageSize: _.debounce(function (newValue) {
+      if (newValue === '' || isNaN(newValue)) {
+        this.imageSize = 128
+        return
+      }
+      if (newValue < 1) {
+        this.imageSize = 1
+        return
+      }
+      if (newValue > this.imageMax) {
+        this.imageSize = this.imageMax
+        return
+      }
       this.drawCube()
-    }, 100),
+    }, 300),
     cubeView: function () {
       this.drawCube()
     },
@@ -901,15 +1044,24 @@ const app = Vue.createApp({
     rotateAxis3: function () {
       this.drawCube()
     },
-    rotateAngle1: _.debounce(function () {
+    rotateAngle1: _.debounce(function (newValue) {
+      if (newValue === '' || isNaN(newValue)) return
+      if (newValue > 180) { this.rotateAngle1 = 180; return }
+      if (newValue < -180) { this.rotateAngle1 = -180; return }
       this.drawCube()
-    }, 100),
-    rotateAngle2: _.debounce(function () {
+    }, 200),
+    rotateAngle2: _.debounce(function (newValue) {
+      if (newValue === '' || isNaN(newValue)) return
+      if (newValue > 180) { this.rotateAngle2 = 180; return }
+      if (newValue < -180) { this.rotateAngle2 = -180; return }
       this.drawCube()
-    }, 100),
-    rotateAngle3: _.debounce(function () {
+    }, 200),
+    rotateAngle3: _.debounce(function (newValue) {
+      if (newValue === '' || isNaN(newValue)) return
+      if (newValue > 180) { this.rotateAngle3 = 180; return }
+      if (newValue < -180) { this.rotateAngle3 = -180; return }
       this.drawCube()
-    }, 100),
+    }, 200),
     backgroundColor: function () {
       this.drawCube()
     },
@@ -929,11 +1081,32 @@ const app = Vue.createApp({
     dist: _.debounce(function () {
       this.drawCube()
     }, 100),
+    theme: {
+      immediate: true,
+      handler(newValue) {
+        document.documentElement.setAttribute('data-bs-theme', newValue)
+        try {
+          localStorage.setItem(STORAGE_THEME, newValue)
+        } catch (e) {}
+      },
+    },
+  },
+  computed: {
+    presetNames() {
+      return Object.keys(this.presets).sort()
+    },
   },
   mounted() {
-    let SRVisualizer = window['sr-visualizer']
-    let element = document.getElementById('visualcube')
-    SRVisualizer.cubePNG(element)
+    this.loadPresets()
+    this.loadCurrent()
+    const debouncedSave = _.debounce(() => this.saveCurrent(), 200)
+    this.$watch(
+      () => PERSIST_KEYS.map((k) => this[k]),
+      debouncedSave,
+      { deep: true }
+    )
+    window.addEventListener('beforeunload', () => debouncedSave.flush())
+    this.$nextTick(() => this.drawCube())
   },
   updated() {
     this.drawFlag = true
